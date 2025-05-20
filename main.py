@@ -709,6 +709,15 @@ async def tracking_task_callback(update: Update, context: ContextTypes.DEFAULT_T
         # Get user's preferred polling interval or use default 5 seconds
         polling_interval = polling_intervals.get(user_id, 5)
         
+        # Create a tracking key for this specific chat
+        tracking_key = get_tracking_key(user_id, chat_id)
+        
+        # Initialize a set to keep track of previously seen tokens for this specific tracking task
+        if not hasattr(context, 'chat_matched_tokens'):
+            context.chat_matched_tokens = {}
+        if tracking_key not in context.chat_matched_tokens:
+            context.chat_matched_tokens[tracking_key] = set()
+        
         # Categorize filters by type
         believe_filters = []
         other_filters = []
@@ -740,14 +749,56 @@ async def tracking_task_callback(update: Update, context: ContextTypes.DEFAULT_T
                     except Exception as e:
                         print(f"Error fetching Believe tokens for filter {filter_obj.value}: {str(e)}")
             
-            # Process tokens and find matches
-            matches = await process_new_tokens(user_id, all_tokens)
+            # Process tokens against user filters
+            matches = []
+            
+            # Find matches that haven't been seen in THIS chat yet
+            for token in all_tokens:
+                if 'address' in token and token['address'] in context.chat_matched_tokens[tracking_key]:
+                    # Skip tokens we've already matched in this chat
+                    continue
+                
+                # Check if any filter matches
+                matched_filter = check_token_match(token, user_filters.get(user_id, []))
+                if matched_filter:
+                    # Add to global user matches - this is for the /matches command
+                    if user_id not in user_matched_tokens:
+                        user_matched_tokens[user_id] = []
+                    
+                    # Check if it's already in the global matches
+                    is_new_globally = True
+                    for existing_token in user_matched_tokens[user_id]:
+                        if 'address' in existing_token and 'address' in token and existing_token['address'] == token['address']:
+                            is_new_globally = False
+                            break
+                    
+                    # Add to global matches if it's new
+                    if is_new_globally:
+                        user_matched_tokens[user_id].append(token)
+                        
+                        # Add to match history
+                        if user_id not in user_match_history:
+                            user_match_history[user_id] = []
+                        
+                        user_match_history[user_id].append(
+                            MatchHistoryEntry(token, int(datetime.now().timestamp() * 1000), matched_filter)
+                        )
+                        
+                        # Save user data
+                        save_user_data(user_id)
+                    
+                    # Mark this token as seen for this specific chat
+                    if 'address' in token:
+                        context.chat_matched_tokens[tracking_key].add(token['address'])
+                    
+                    # Add to current batch of matches for notification
+                    matches.append({"token": token, "filter": matched_filter})
             
             # Notify user if matches found - send to the specific chat
             if matches:
                 notification = f"🚨 Found {len(matches)} new matching tokens! 🚨\n\n"
                 
-                for i, match in enumerate(matches[:5], 1):
+                for i, match in enumerate(matches[:5], 1):  # Limit to 5 in notification
                     token = match["token"]
                     filter_obj = match["filter"]
                     
@@ -779,7 +830,7 @@ async def tracking_task_callback(update: Update, context: ContextTypes.DEFAULT_T
                 keyboard = [[InlineKeyboardButton("View All Matches", callback_data="matches")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
-                # Send a new message to the specific chat
+                # Send notification to the specific chat
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=notification,
@@ -798,7 +849,6 @@ async def tracking_task_callback(update: Update, context: ContextTypes.DEFAULT_T
             chat_id=chat_id,
             text=f"❌ Token tracking error: {str(e)}"
         )
-
 
 async def handle_filter_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text input for filter values"""
@@ -1793,6 +1843,16 @@ async def tracking_task(update: Update, context: ContextTypes.DEFAULT_TYPE, user
         # Get user's preferred polling interval or use default 5 seconds
         polling_interval = polling_intervals.get(user_id, 5)  # default to 5 seconds
         
+        # Create a tracking key for this specific chat
+        tracking_key = get_tracking_key(user_id, chat_id)
+        
+        # Initialize a set to keep track of previously seen tokens for this specific tracking task
+        # This prevents the same token from being reported multiple times in the same chat
+        if not hasattr(context, 'chat_matched_tokens'):
+            context.chat_matched_tokens = {}
+        if tracking_key not in context.chat_matched_tokens:
+            context.chat_matched_tokens[tracking_key] = set()
+        
         # Send initial message to the specific chat
         await context.bot.send_message(
             chat_id=chat_id,
@@ -1830,8 +1890,50 @@ async def tracking_task(update: Update, context: ContextTypes.DEFAULT_TYPE, user
                     except Exception as e:
                         print(f"Error fetching Believe tokens for filter {filter_obj.value}: {str(e)}")
             
-            # Process tokens and find matches
-            matches = await process_new_tokens(user_id, all_tokens)
+            # Process tokens against user filters
+            matches = []
+            
+            # Find matches that haven't been seen in THIS chat yet
+            for token in all_tokens:
+                if 'address' in token and token['address'] in context.chat_matched_tokens[tracking_key]:
+                    # Skip tokens we've already matched in this chat
+                    continue
+                
+                # Check if any filter matches
+                matched_filter = check_token_match(token, user_filters.get(user_id, []))
+                if matched_filter:
+                    # Add to global user matches - this is for the /matches command
+                    if user_id not in user_matched_tokens:
+                        user_matched_tokens[user_id] = []
+                    
+                    # Check if it's already in the global matches
+                    is_new_globally = True
+                    for existing_token in user_matched_tokens[user_id]:
+                        if 'address' in existing_token and 'address' in token and existing_token['address'] == token['address']:
+                            is_new_globally = False
+                            break
+                    
+                    # Add to global matches if it's new
+                    if is_new_globally:
+                        user_matched_tokens[user_id].append(token)
+                        
+                        # Add to match history
+                        if user_id not in user_match_history:
+                            user_match_history[user_id] = []
+                        
+                        user_match_history[user_id].append(
+                            MatchHistoryEntry(token, int(datetime.now().timestamp() * 1000), matched_filter)
+                        )
+                        
+                        # Save user data
+                        save_user_data(user_id)
+                    
+                    # Mark this token as seen for this specific chat
+                    if 'address' in token:
+                        context.chat_matched_tokens[tracking_key].add(token['address'])
+                    
+                    # Add to current batch of matches for notification
+                    matches.append({"token": token, "filter": matched_filter})
             
             # Notify user if matches found - send to the specific chat
             if matches:
