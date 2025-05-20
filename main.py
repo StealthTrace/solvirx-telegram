@@ -61,7 +61,7 @@ user_filters: Dict[int, List[WatchlistFilter]] = {}
 user_matched_tokens: Dict[int, List[Dict]] = {}
 user_match_history: Dict[int, List[MatchHistoryEntry]] = {}
 user_sound_enabled: Dict[int, bool] = {}
-polling_tasks: Dict[int, asyncio.Task] = {}
+polling_tasks: Dict[str, asyncio.Task] = {} 
 polling_intervals: Dict[int, int] = {}  # user_id -> seconds (for configurable intervals)
 
 # Add these at the module level, outside of any functions
@@ -663,6 +663,7 @@ async def start_tracking_callback(update: Update, context: ContextTypes.DEFAULT_
     """Start tracking from button press"""
     query = update.callback_query
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     
     # Check if user has filters
     if user_id not in user_filters or not user_filters[user_id]:
@@ -675,20 +676,23 @@ async def start_tracking_callback(update: Update, context: ContextTypes.DEFAULT_
         )
         return
     
-    # Check if tracking is already running
-    if user_id in polling_tasks and not polling_tasks[user_id].done():
+    # Create a unique key for this user-chat combination
+    tracking_key = get_tracking_key(user_id, chat_id)
+    
+    # Check if tracking is already running in this chat
+    if tracking_key in polling_tasks and not polling_tasks[tracking_key].done():
         keyboard = [[InlineKeyboardButton("« Back to Main Menu", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            text="⚠️ Token tracking is already running.",
+            text="⚠️ Token tracking is already running in this chat.",
             reply_markup=reply_markup
         )
         return
     
-    # Start tracking task
-    task = asyncio.create_task(tracking_task_callback(update, context, user_id))
-    polling_tasks[user_id] = task
+    # Start tracking task specific to this chat
+    task = asyncio.create_task(tracking_task_callback(update, context, user_id, chat_id))
+    polling_tasks[tracking_key] = task
     
     keyboard = [[InlineKeyboardButton("« Back to Main Menu", callback_data="main_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -698,9 +702,8 @@ async def start_tracking_callback(update: Update, context: ContextTypes.DEFAULT_
         reply_markup=reply_markup
     )
 
-# Define similar callback versions for other commands
-
-async def tracking_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+# Update tracking_task_callback to use the specific chat_id
+async def tracking_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int):
     """Modified tracking task that works with callbacks"""
     try:
         # Get user's preferred polling interval or use default 5 seconds
@@ -740,7 +743,7 @@ async def tracking_task_callback(update: Update, context: ContextTypes.DEFAULT_T
             # Process tokens and find matches
             matches = await process_new_tokens(user_id, all_tokens)
             
-            # Notify user if matches found
+            # Notify user if matches found - send to the specific chat
             if matches:
                 notification = f"🚨 Found {len(matches)} new matching tokens! 🚨\n\n"
                 
@@ -776,9 +779,9 @@ async def tracking_task_callback(update: Update, context: ContextTypes.DEFAULT_T
                 keyboard = [[InlineKeyboardButton("View All Matches", callback_data="matches")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
-                # Send a new message rather than editing the existing one
+                # Send a new message to the specific chat
                 await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
+                    chat_id=chat_id,
                     text=notification,
                     reply_markup=reply_markup
                 )
@@ -792,9 +795,10 @@ async def tracking_task_callback(update: Update, context: ContextTypes.DEFAULT_T
         print(f"Error in tracking task: {e}")
         # Send error notification
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text=f"❌ Token tracking error: {str(e)}"
         )
+
 
 async def handle_filter_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text input for filter values"""
@@ -1783,15 +1787,15 @@ async def notify_user(update: Update, matches: List[Dict]):
     except Exception as e:
         print(f"Error sending notification: {str(e)}")
 
-async def tracking_task(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+async def tracking_task(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int):
     """Background task for token tracking"""
     try:
         # Get user's preferred polling interval or use default 5 seconds
         polling_interval = polling_intervals.get(user_id, 5)  # default to 5 seconds
         
-        # Send initial message
+        # Send initial message to the specific chat
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text=f"🔍 Token tracking started. Checking every {polling_interval} seconds for new matches."
         )
         
@@ -1829,7 +1833,7 @@ async def tracking_task(update: Update, context: ContextTypes.DEFAULT_TYPE, user
             # Process tokens and find matches
             matches = await process_new_tokens(user_id, all_tokens)
             
-            # Notify user if matches found
+            # Notify user if matches found - send to the specific chat
             if matches:
                 notification = f"🚨 Found {len(matches)} new matching tokens! 🚨\n\n"
                 
@@ -1853,7 +1857,6 @@ async def tracking_task(update: Update, context: ContextTypes.DEFAULT_TYPE, user
                         notification += f"   🌐 Website: {website}\n"
                     
                     if twitter:
-                        # Ensure Twitter handle has @ prefix for clarity
                         if not twitter.startswith('@') and not twitter.startswith('http'):
                             twitter = f"@{twitter}"
                         notification += f"   🐦 Twitter: {twitter}\n"
@@ -1863,63 +1866,87 @@ async def tracking_task(update: Update, context: ContextTypes.DEFAULT_TYPE, user
                 if len(matches) > 5:
                     notification += f"...and {len(matches) - 5} more. Check /matches for all."
                 
+                keyboard = [[InlineKeyboardButton("View All Matches", callback_data="matches")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                # Send notification to the specific chat
                 await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=notification
+                    chat_id=chat_id,
+                    text=notification,
+                    reply_markup=reply_markup
                 )
             
             # Wait for next check
             await asyncio.sleep(polling_interval)
     except asyncio.CancelledError:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="🛑 Token tracking stopped."
-        )
+        # This is expected when stopping the task
+        pass
     except Exception as e:
         print(f"Error in tracking task: {e}")
+        # Send error notification to the specific chat
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text=f"❌ Token tracking error: {str(e)}"
         )
 
+# Define a helper function to create a unique key
+def get_tracking_key(user_id: int, chat_id: int) -> str:
+    """Creates a unique key for user-chat combination"""
+    return f"{user_id}:{chat_id}"
+
+# Update start_tracking_command
 async def start_tracking_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Starts automatic token tracking"""
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     
     # Check if user has filters
     if user_id not in user_filters or not user_filters[user_id]:
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text="❌ You need to add filters first. Use /add_filter to add some."
         )
         return
     
-    # Check if tracking is already running
-    if user_id in polling_tasks and not polling_tasks[user_id].done():
+    # Create a unique key for this user-chat combination
+    tracking_key = get_tracking_key(user_id, chat_id)
+    
+    # Check if tracking is already running in this chat
+    if tracking_key in polling_tasks and not polling_tasks[tracking_key].done():
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="⚠️ Token tracking is already running."
+            chat_id=chat_id,
+            text="⚠️ Token tracking is already running in this chat."
         )
         return
     
-    # Start tracking task
-    task = asyncio.create_task(tracking_task(update, context, user_id))
-    polling_tasks[user_id] = task
+    # Start tracking task specific to this chat
+    task = asyncio.create_task(tracking_task(update, context, user_id, chat_id))
+    polling_tasks[tracking_key] = task
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🔍 Token tracking started. Checking for new matches."
+    )
 
+# Update stop_tracking_command
 async def stop_tracking_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Stops automatic token tracking"""
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     
-    if user_id in polling_tasks and not polling_tasks[user_id].done():
-        polling_tasks[user_id].cancel()
+    # Create a unique key for this user-chat combination
+    tracking_key = get_tracking_key(user_id, chat_id)
+    
+    if tracking_key in polling_tasks and not polling_tasks[tracking_key].done():
+        polling_tasks[tracking_key].cancel()
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="🛑 Token tracking stopped."
+            chat_id=chat_id,
+            text="🛑 Token tracking stopped in this chat."
         )
     else:
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="⚠️ Token tracking is not running."
+            chat_id=chat_id,
+            text="⚠️ Token tracking is not running in this chat."
         )
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2296,6 +2323,12 @@ async def believe_tracker_command(update: Update, context: ContextTypes.DEFAULT_
                 
                 # Add instructions
                 tokens_text += "\nTo track these tokens:\n"
+                def format_command_for_chat(cmd, chat_type):
+                    """Format command for group or private chat."""
+                    if chat_type in ['group', 'supergroup']:
+                        return f"{cmd}{BOT_USERNAME}"
+                    return cmd
+
                 add_filter_cmd = format_command_for_chat("/add_filter", update.effective_chat.type)
                 start_tracking_cmd = format_command_for_chat("/start_tracking", update.effective_chat.type)
                 tokens_text += f"1. Add a filter with {add_filter_cmd} token <ticker> or {add_filter_cmd} twitter <handle>\n"
@@ -2313,19 +2346,24 @@ async def believe_tracker_command(update: Update, context: ContextTypes.DEFAULT_
             text=error_message
         )
 
+# Update stop_tracking_callback
 async def stop_tracking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Stop tracking from button press"""
     query = update.callback_query
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     
-    if user_id in polling_tasks and not polling_tasks[user_id].done():
-        polling_tasks[user_id].cancel()
+    # Create a unique key for this user-chat combination
+    tracking_key = get_tracking_key(user_id, chat_id)
+    
+    if tracking_key in polling_tasks and not polling_tasks[tracking_key].done():
+        polling_tasks[tracking_key].cancel()
         
         keyboard = [[InlineKeyboardButton("« Back to Main Menu", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            text="🛑 Token tracking stopped.",
+            text="🛑 Token tracking stopped in this chat.",
             reply_markup=reply_markup
         )
     else:
@@ -2333,7 +2371,7 @@ async def stop_tracking_callback(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            text="⚠️ Token tracking is not running.",
+            text="⚠️ Token tracking is not running in this chat.",
             reply_markup=reply_markup
         )
 
