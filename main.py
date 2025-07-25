@@ -17,6 +17,7 @@ load_dotenv('../.env.local')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8276149479:AAEbK3YWKU37QxuLbclk0U-T3Lhepy-cojw')
 SOLANA_TRACKER_API_KEY = os.getenv('SOLANA_TRACKER_API_KEY', '151b4151-3227-4eb2-96d8-0b19be6fa5a6')
 
+
 # Use environment variable for bot token if available
 TOKEN: Final = TELEGRAM_TOKEN
 BOT_USERNAME: Final = '@Solvirx_bot'
